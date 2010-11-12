@@ -1,0 +1,142 @@
+#!/usr/bin/python
+
+import sys
+import hashlib
+import logging
+import os
+
+
+"""
+
+fragapply somefile fragid fragfile
+
+
+# begin fragment fragid fragmd5
+# frag file contents
+# end fragment fragid
+
+
+"""
+
+class Frag:
+    """ represents a config file fragment to be included in a conf file
+    """
+
+    def __init__(self, fragfile, fragid):
+        self.frag_file = fragfile
+        self.frag_id = fragid
+        self.frag_md5 = None
+        self.frag_contents = None
+        self.read()
+        
+        
+    def _header_start(self):
+        return "# -- BEGIN FRAG %s" % (self.frag_id)
+    
+    def _footer_start(self):
+        return "# -- END FRAG %s" % (self.frag_id)
+
+    header_start = property(_header_start, None)
+    footer_start = property(_footer_start, None)
+    
+    def _header(self):
+        return "%s %s\n" % (self.header_start, self.frag_md5)
+    
+    def _footer(self):
+        return "%s %s\n" % (self.footer_start, self.frag_md5)
+    
+    header = property(_header, None)
+    footer = property(_footer, None)
+
+    def read(self):
+        if self.frag_contents != None:
+            return
+        fp = open(self.frag_file, "r")
+        try:
+            self.frag_contents = fp.read()
+            self.frag_md5 = hashlib.md5(self.frag_contents).hexdigest()
+        except:
+            self.frag_contents = None
+            self.frag_md5 = None
+        fp.close()
+
+    def write(self, fp):
+        fp.write(self.header)
+        fp.write(self.frag_contents)
+        if not self.frag_contents.endswith('\n'):
+            fp.write('\n')            
+        fp.write(self.footer)
+    
+class Target:
+    def __init__(self, targetfile):
+        self.target_file = targetfile
+        self.target_contents = None
+        self.read()
+    
+    def read(self):
+        fp = open(self.target_file, "r")
+        try:
+            self.target_contents = fp.readlines()
+        except:
+            self.target_contents = None
+        fp.close()
+    
+    def has_fragment(self, frag):
+        return (frag.header in self.target_contents) and (frag.footer in self.target_contents)
+    
+    def apply_fragment(self, frag):
+        if self.has_fragment(frag):
+            logging.debug("target file already has this fragment, doing nothing")
+            return
+        # create a new file
+        newfname = "%s.new" % self.target_file
+        fp = open(newfname, "w")
+        skip = False
+        pasted = False
+        for line in self.target_contents:
+            if line.startswith(frag.header_start):
+                # an old version of this fragment exists, skip it
+                skip = True
+                logging.debug("target file has an old version of fragment, skipping it")
+            elif line.startswith(frag.footer_start):
+                # we should have been skipping                 
+                assert skip == True
+                # stop skipping and paste the new fragment in place
+                skip = False
+                logging.debug("reached footer of old fragment, inserting new one")
+                frag.write(fp)
+                pasted = True
+            else:
+                if not skip:
+                    fp.write(line)
+        if not pasted:
+            # at this point we better not be still skipping
+            logging.debug("appending fragment (target file had no old version of fragment to replace)")
+            assert skip == False
+            frag.write(fp)
+        fp.close()
+        st = os.stat(self.target_file)
+        os.chmod(newfname, st.st_mode)
+        os.chown(newfname, st.st_uid, st.st_gid)        
+        os.rename(self.target_file, "%s.old" % self.target_file)
+        os.rename(newfname, self.target_file)
+
+        
+        
+def main():
+    if len(sys.argv) != 4:
+        print "Usage: %s target-file fragment-id fragment-file" % (sys.argv[0])
+        sys.exit(1)
+    logging.basicConfig(level=logging.DEBUG)
+    targetfile = sys.argv[1]
+    fragid = sys.argv[2]
+    fragfile = sys.argv[3]
+    
+    frag = Frag(fragfile, fragid)
+    target = Target(targetfile)
+    
+    target.apply_fragment(frag)
+    
+if __name__ == "__main__":
+    main()
+            
